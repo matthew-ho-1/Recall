@@ -42,14 +42,45 @@ def embed_image(
 
     return embedding.squeeze(0)
 
+def embed_text(
+    model,
+    tokenizer,
+    text: str,
+) -> torch.Tensor:
+
+    tokens = tokenizer([text])
+
+    with torch.no_grad():
+        embedding = model.encode_text(tokens)
+
+    embedding = embedding / embedding.norm(
+        dim=-1,
+        keepdim=True,
+    )
+
+    return embedding.squeeze(0)
+
 if __name__ == "__main__":
     model, preprocess, tokenizer = load_model()
 
-    embedding = embed_image(
+    image_embedding = embed_image(
         model,
         preprocess,
         Path(".recall/thumbnails/1.jpg"),
     )
 
-    print(embedding)
-    print("Shape:", embedding.shape)
+    text_embedding = embed_text(
+        model,
+        tokenizer,
+        "person holding a camera",
+    )
+
+    print(
+        "Image:",
+        image_embedding.shape,
+    )
+
+    print(
+        "Text:",
+        text_embedding.shape,
+    )
