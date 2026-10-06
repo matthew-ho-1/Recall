@@ -1,2 +1,5 @@
 pillow==12.3.0
 pillow_heif==1.8.0
+open_clip_torch==3.3.0
+torch==2.14.1
+torchvision==0.29.1
