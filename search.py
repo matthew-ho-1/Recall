@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 import torch
+import time
 
 from database import get_searchable_images
 from embeddings import (
@@ -108,11 +109,13 @@ def main():
     )
 
     try:
+        start = time.perf_counter()
         results = search(
             connection,
             args.query,
             args.limit,
         )
+        elapsed = time.perf_counter() - start
     finally:
         connection.close()
 
@@ -133,6 +136,7 @@ def main():
             f"{result['score']:.3f}  "
             f"{result['path']}"
         )
+    print(f"\nSearch completed in {elapsed:.3f}s")
 
 
 if __name__ == "__main__":
