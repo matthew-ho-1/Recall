@@ -9,6 +9,8 @@ from database import (
     remove_deleted_images,
 )
 
+from processor import process_images
+
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -89,6 +91,18 @@ def main():
             images,
             args.directory,
         )
+
+        print("\nProcessing images...")
+
+        processing_stats = process_images(
+            connection,
+            images,
+        )
+
+        print("\nProcessing:")
+        print(f"Processed: {processing_stats['processed']}")
+        print(f"Skipped:   {processing_stats['skipped']}")
+        print(f"Failed:    {processing_stats['failed']}")
 
     finally:
         connection.close()

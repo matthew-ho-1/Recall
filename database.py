@@ -20,7 +20,13 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             extension TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             modified_at REAL NOT NULL,
-            indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            width INTEGER,
+            height INTEGER,
+            format TEXT,
+            thumbnail_path TEXT,
+            processed_at TEXT,
+            processing_error TEXT
         )
         """
     )
@@ -85,7 +91,9 @@ def index_image(
             extension = excluded.extension,
             file_size = excluded.file_size,
             modified_at = excluded.modified_at,
-            indexed_at = CURRENT_TIMESTAMP
+            indexed_at = CURRENT_TIMESTAMP,
+            processed_at = NULL,
+            processing_error = NULL
         """,
         (
             str(path.resolve()),
@@ -138,22 +146,35 @@ def remove_deleted_images(
 
     cursor = connection.execute(
         """
-        SELECT path
+        SELECT path, thumbnail_path
         FROM images
         """
     )
 
-    deleted_paths = []
+    deleted_images = []
 
     for row in cursor.fetchall():
         indexed_path = Path(row[0])
+        thumbnail_path = row[1]
 
-        # Only consider files belonging to this scan root.
+        # Only check images belonging to the directory
+        # we're currently scanning.
         if indexed_path.is_relative_to(root):
             if str(indexed_path) not in current_paths:
-                deleted_paths.append(str(indexed_path))
+                deleted_images.append(
+                    (str(indexed_path), thumbnail_path)
+                )
 
-    for path in deleted_paths:
+    for path, thumbnail_path in deleted_images:
+
+        # Delete cached thumbnail if one exists.
+        if thumbnail_path is not None:
+            thumbnail = Path(thumbnail_path)
+
+            if thumbnail.exists():
+                thumbnail.unlink()
+
+        # Delete database record.
         connection.execute(
             """
             DELETE FROM images
@@ -164,4 +185,90 @@ def remove_deleted_images(
 
     connection.commit()
 
-    return len(deleted_paths)
+    return len(deleted_images)
+
+def update_image_metadata(
+    connection: sqlite3.Connection,
+    path: Path,
+    metadata: dict,
+    thumbnail_path: Path,
+) -> None:
+    connection.execute(
+        """
+        UPDATE images
+        SET
+            width = ?,
+            height = ?,
+            format = ?,
+            thumbnail_path = ?,
+            processed_at = CURRENT_TIMESTAMP,
+            processing_error = NULL
+        WHERE path = ?
+        """,
+        (
+            metadata["width"],
+            metadata["height"],
+            metadata["format"],
+            str(thumbnail_path),
+            str(path.resolve()),
+        ),
+    )
+
+def record_processing_error(
+    connection: sqlite3.Connection,
+    path: Path,
+    error: str,
+) -> None:
+    connection.execute(
+        """
+        UPDATE images
+        SET
+            processing_error = ?,
+            processed_at = CURRENT_TIMESTAMP
+        WHERE path = ?
+        """,
+        (
+            error,
+            str(path.resolve()),
+        ),
+    )
+
+def needs_processing(
+    connection: sqlite3.Connection,
+    path: Path,
+) -> bool:
+    cursor = connection.execute(
+        """
+        SELECT processed_at
+        FROM images
+        WHERE path = ?
+        """,
+        (str(path.resolve()),),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return True
+
+    return row[0] is None
+
+def get_image_id(
+    connection: sqlite3.Connection,
+    path: Path,
+) -> int | None:
+    cursor = connection.execute(
+        """
+        SELECT id
+        FROM images
+        WHERE path = ?
+        """,
+        (str(path.resolve()),),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return row[0]

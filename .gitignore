@@ -1,0 +1,14 @@
+# Recall generated data
+.recall/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
