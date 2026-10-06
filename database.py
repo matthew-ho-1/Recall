@@ -345,3 +345,23 @@ def needs_embedding(
         return True
 
     return False
+
+
+def get_searchable_images(
+    connection: sqlite3.Connection,
+) -> list[tuple]:
+
+    cursor = connection.execute(
+        """
+        SELECT
+            id,
+            path,
+            thumbnail_path,
+            embedding_path
+        FROM images
+        WHERE embedding_path IS NOT NULL
+          AND embedded_at IS NOT NULL
+        """
+    )
+
+    return cursor.fetchall()

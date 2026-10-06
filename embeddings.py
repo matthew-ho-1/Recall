@@ -175,3 +175,10 @@ def generate_embeddings(
     connection.commit()
 
     return stats
+
+def load_embedding(
+    path: Path,
+) -> torch.Tensor:
+    array = np.load(path)
+
+    return torch.from_numpy(array)
