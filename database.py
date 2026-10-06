@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+import numpy as np
 
 # Open recall.db
 def connect(database_path: Path) -> sqlite3.Connection: 
@@ -21,12 +22,16 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             file_size INTEGER NOT NULL,
             modified_at REAL NOT NULL,
             indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
             width INTEGER,
             height INTEGER,
             format TEXT,
             thumbnail_path TEXT,
             processed_at TEXT,
-            processing_error TEXT
+            processing_error TEXT,
+
+            embedding_path TEXT,
+            embedded_at TEXT
         )
         """
     )
@@ -72,10 +77,7 @@ def get_image_status(
     return "unchanged"
 
 #INSERT new photo or UPDATE existing photo
-def index_image(
-    connection: sqlite3.Connection,
-    path: Path,
-) -> None:
+def index_image(connection, path):
     stat = path.stat()
 
     connection.execute(
@@ -87,13 +89,19 @@ def index_image(
             modified_at
         )
         VALUES (?, ?, ?, ?)
+
         ON CONFLICT(path) DO UPDATE SET
             extension = excluded.extension,
             file_size = excluded.file_size,
             modified_at = excluded.modified_at,
-            indexed_at = CURRENT_TIMESTAMP,
+
             processed_at = NULL,
-            processing_error = NULL
+            processing_error = NULL,
+
+            embedding_path = NULL,
+            embedded_at = NULL,
+
+            indexed_at = CURRENT_TIMESTAMP
         """,
         (
             str(path.resolve()),
@@ -137,6 +145,7 @@ def remove_deleted_images(
     images: list[Path],
     root: Path,
 ) -> int:
+
     root = root.resolve()
 
     current_paths = {
@@ -146,7 +155,10 @@ def remove_deleted_images(
 
     cursor = connection.execute(
         """
-        SELECT path, thumbnail_path
+        SELECT
+            path,
+            thumbnail_path,
+            embedding_path
         FROM images
         """
     )
@@ -156,25 +168,36 @@ def remove_deleted_images(
     for row in cursor.fetchall():
         indexed_path = Path(row[0])
         thumbnail_path = row[1]
+        embedding_path = row[2]
 
-        # Only check images belonging to the directory
-        # we're currently scanning.
         if indexed_path.is_relative_to(root):
             if str(indexed_path) not in current_paths:
                 deleted_images.append(
-                    (str(indexed_path), thumbnail_path)
+                    (
+                        str(indexed_path),
+                        thumbnail_path,
+                        embedding_path,
+                    )
                 )
 
-    for path, thumbnail_path in deleted_images:
+    for (
+        path,
+        thumbnail_path,
+        embedding_path,
+    ) in deleted_images:
 
-        # Delete cached thumbnail if one exists.
         if thumbnail_path is not None:
             thumbnail = Path(thumbnail_path)
 
             if thumbnail.exists():
                 thumbnail.unlink()
 
-        # Delete database record.
+        if embedding_path is not None:
+            embedding = Path(embedding_path)
+
+            if embedding.exists():
+                embedding.unlink()
+
         connection.execute(
             """
             DELETE FROM images
@@ -272,3 +295,53 @@ def get_image_id(
         return None
 
     return row[0]
+
+def update_image_embedding(
+    connection: sqlite3.Connection,
+    path: Path,
+    embedding_path: Path,
+) -> None:
+    connection.execute(
+        """
+        UPDATE images
+        SET
+            embedding_path = ?,
+            embedded_at = CURRENT_TIMESTAMP
+        WHERE path = ?
+        """,
+        (
+            str(embedding_path),
+            str(path.resolve()),
+        ),
+    )
+
+def needs_embedding(
+    connection: sqlite3.Connection,
+    path: Path,
+) -> bool:
+    cursor = connection.execute(
+        """
+        SELECT embedded_at, embedding_path
+        FROM images
+        WHERE path = ?
+        """,
+        (str(path.resolve()),),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return True
+
+    embedded_at, embedding_path = row
+
+    if embedded_at is None:
+        return True
+
+    if embedding_path is None:
+        return True
+
+    if not Path(embedding_path).exists():
+        return True
+
+    return False

@@ -10,6 +10,7 @@ from database import (
 )
 
 from processor import process_images
+from embeddings import generate_embeddings
 
 
 IMAGE_EXTENSIONS = {
@@ -103,6 +104,22 @@ def main():
         print(f"Processed: {processing_stats['processed']}")
         print(f"Skipped:   {processing_stats['skipped']}")
         print(f"Failed:    {processing_stats['failed']}")
+
+        print("\nGenerating embeddings...")
+
+        embedding_stats = generate_embeddings(
+            connection,
+            images,
+        )
+        print(
+            f"Embedded: {embedding_stats['embedded']}"
+        )
+        print(
+            f"Skipped:  {embedding_stats['skipped']}"
+        )
+        print(
+            f"Failed:   {embedding_stats['failed']}"
+        )
 
     finally:
         connection.close()
