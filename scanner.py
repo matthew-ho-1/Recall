@@ -2,6 +2,14 @@ import argparse
 from collections import Counter
 from pathlib import Path
 
+from database import (
+    connect,
+    index_images,
+    initialize_database,
+    remove_deleted_images,
+)
+
+
 IMAGE_EXTENSIONS = {
     ".jpg",
     ".jpeg",
@@ -10,8 +18,6 @@ IMAGE_EXTENSIONS = {
     ".heif",
     ".webp",
 }
-
-
 
 
 def discover_images(root: Path) -> list[Path]:
@@ -25,7 +31,7 @@ def discover_images(root: Path) -> list[Path]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Recursively discover images in a directory."
+        description="Recursively discover and index images."
     )
 
     parser.add_argument(
@@ -36,6 +42,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate directory
     if not args.directory.exists():
         raise SystemExit(
             f"Directory does not exist: {args.directory}"
@@ -46,22 +53,57 @@ def main():
             f"Not a directory: {args.directory}"
         )
 
+    # Discover images
     print(f"Scanning {args.directory}...")
 
-    # 1. Find all the images
     images = discover_images(args.directory)
 
-    # 2. Count them by extension
+    # Count images by extension
     extension_counts = Counter(
         image.suffix.lower()
         for image in images
     )
 
-    # 3. Print the results
     print(f"\nFound {len(images)} images:\n")
 
     for extension, count in sorted(extension_counts.items()):
         print(f"{extension:<6} {count:>5}")
+
+    # Open Recall database
+    database_path = Path(".recall") / "recall.db"
+
+    connection = connect(database_path)
+
+    try:
+        initialize_database(connection)
+
+        print("\nIndexing images...")
+
+        stats = index_images(
+            connection,
+            images,
+        )
+
+        deleted = remove_deleted_images(
+            connection,
+            images,
+            args.directory,
+        )
+
+    finally:
+        connection.close()
+
+    # Print indexing results
+    indexed = stats["new"] + stats["modified"]
+
+    print(f"\nDiscovered: {len(images)}")
+    print(f"New:        {stats['new']}")
+    print(f"Modified:   {stats['modified']}")
+    print(f"Unchanged:  {stats['unchanged']}")
+    print(f"Indexed:    {indexed}")
+    print(f"Deleted:    {deleted}")
+
+    print(f"\nDatabase: {database_path}")
 
 
 if __name__ == "__main__":
