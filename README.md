@@ -36,13 +36,13 @@ Recall can then retrieve and rank relevant images from the user's existing photo
 
 ## Current Status
 
-Recall is currently under development.
+Recall is currently under active development.
 
 ### v0.1 — Image Discovery
 
-The current CLI recursively scans a directory and discovers supported image files.
+Recall began as a command-line tool for recursively scanning a directory and discovering supported image files.
 
-Supported formats currently include:
+Supported formats include:
 
 - `.jpg`
 - `.jpeg`
@@ -53,19 +53,54 @@ Supported formats currently include:
 
 The scanner also reports the number of discovered images by file type.
 
-Example:
+### v0.2 — Persistent Image Index
+
+Recall maintains a persistent local SQLite index of discovered images.
+
+The index tracks filesystem metadata and synchronizes with the photo library across scans.
+
+Recall can distinguish between:
+
+- New images
+- Modified images
+- Unchanged images
+- Deleted images
+
+Only new or modified files need to be re-indexed, allowing later image-processing and machine-learning stages to avoid unnecessary work.
+
+Deleted files are removed from the index without modifying the user's original photo library.
+
+### v0.3 — Image Processing Pipeline
+
+Recall can now open indexed images and build a local processing cache.
+
+The processing pipeline currently supports:
+
+- Image decoding with Pillow
+- HEIC/HEIF decoding
+- Width and height extraction
+- Image format detection
+- Incremental image processing
+- Thumbnail generation
+- Persistent thumbnail paths
+- Processing failure tracking
+- Cleanup of thumbnails for deleted images
+
+Generated thumbnails are stored inside Recall's local cache rather than alongside the user's original photos.
+
+Example runtime data:
 
 ```text
-Scanning E:\Photos...
-
-Found 1847 images:
-
-.heic    724
-.jpeg     83
-.jpg     912
-.png     103
-.webp     25
+.recall/
+├── recall.db
+└── thumbnails/
+    ├── 1.jpg
+    ├── 2.jpg
+    ├── 3.jpg
+    └── ...
 ```
+
+Original photos are never modified by the processing pipeline.
 
 ## Usage
 
@@ -80,7 +115,13 @@ git clone https://github.com/YOUR_USERNAME/Recall.git
 cd Recall
 ```
 
-Run the scanner:
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run Recall against a photo directory:
 
 ```bash
 python scanner.py /path/to/photos
@@ -98,11 +139,41 @@ or using the Python launcher:
 py scanner.py "E:\Photos"
 ```
 
-The scanner recursively searches all subdirectories under the provided path.
+Recall recursively scans all subdirectories under the provided path.
 
-## Planned Architecture
+A scan may produce output similar to:
 
-Recall will use a multi-stage retrieval pipeline:
+```text
+Scanning E:\Photos...
+
+Found 1847 images:
+
+.heic    724
+.jpeg     83
+.jpg     912
+.png     103
+.webp     25
+
+Indexing images...
+
+Discovered: 1847
+New:          12
+Modified:      2
+Unchanged:  1833
+Deleted:       0
+
+Processing images...
+
+Processed:    14
+Skipped:    1833
+Failed:        0
+```
+
+Subsequent scans avoid unnecessarily processing unchanged images.
+
+## Architecture
+
+Recall is being built as a multi-stage retrieval pipeline:
 
 ```text
 Photo Library
@@ -114,14 +185,20 @@ Photo Library
          │
          ▼
 ┌──────────────────┐
-│ Metadata +       │
-│ Thumbnail Index  │
+│ Persistent       │
+│ SQLite Index     │
 └────────┬─────────┘
          │
-         ├───────────────┐
-         ▼               ▼
+         ▼
+┌──────────────────┐
+│ Image Processing │
+│ + Thumbnails     │
+└────────┬─────────┘
+         │
+         ├────────────────┐
+         ▼                ▼
 ┌────────────────┐  ┌────────────────┐
-│ Face / Identity│  │ Image/Text     │
+│ Face / Identity│  │ Image / Text   │
 │ Embeddings     │  │ Embeddings     │
 └────────┬───────┘  └────────┬───────┘
          │                   │
@@ -136,47 +213,106 @@ Photo Library
           │ Reranking      │
           └────────┬───────┘
                    ▼
-             Best Matches
+              Best Matches
 ```
 
-Potential technologies include:
+Current and potential technologies include:
 
 - Python
-- OpenCV
+- SQLite
 - Pillow
+- pillow-heif
+- OpenCV
 - CLIP-style multimodal embeddings
 - Face embeddings
-- perceptual hashing
+- Perceptual hashing
 - FAISS
-- SQLite
 - FastAPI
 
-The architecture is still evolving as the project develops.
+The architecture is evolving as Recall moves from filesystem indexing toward multimodal retrieval.
 
 ## Roadmap
 
+### Foundation
+
 - [x] Recursive image discovery
 - [x] File-extension statistics
-- [ ] Image metadata extraction
-- [ ] Thumbnail generation
-- [ ] Persistent local image index
-- [ ] Duplicate and near-duplicate detection
-- [ ] Face detection
-- [ ] Identity matching
+- [x] Persistent SQLite image index
+- [x] Incremental indexing
+- [x] New, modified, unchanged, and deleted image detection
+- [x] Image metadata extraction
+- [x] HEIC/HEIF image support
+- [x] Thumbnail generation
+- [x] Incremental image processing
+- [x] Processing failure tracking
+- [x] Thumbnail cleanup
+
+### Retrieval
+
 - [ ] Multimodal image embeddings
 - [ ] Natural-language photo search
 - [ ] Vector similarity search
-- [ ] Image quality ranking
+- [ ] Persistent vector index
+
+### Identity
+
+- [ ] Face detection
+- [ ] Face embeddings
+- [ ] Identity matching
+
+### Ranking
+
+- [ ] Duplicate and near-duplicate detection
+- [ ] Image quality signals
+- [ ] Context-aware ranking
 - [ ] Retrieval evaluation and benchmarks
+
+### Application
+
+- [ ] Search API
 - [ ] Web interface
+- [ ] Interactive result gallery
+
+## Project Milestones
+
+```text
+v0.1    Image discovery
+  │
+  ▼
+v0.2    Persistent incremental indexing
+  │
+  ▼
+v0.3    Image processing + thumbnails
+  │
+  ▼
+v0.4    Semantic retrieval
+  │
+  ▼
+v0.5    Identity-aware retrieval
+  │
+  ▼
+v1.0    Full Recall experience
+```
+
+The next major milestone is **v0.4**, where Recall will begin generating multimodal embeddings and retrieving photos using natural-language queries.
 
 ## Privacy
 
 Personal photo libraries contain highly sensitive data.
 
-Recall is being designed with a **local-first** philosophy. Wherever practical, photo indexing, embeddings, metadata, and retrieval should remain on the user's machine.
+Recall is designed around a **local-first** philosophy. Wherever practical, photo indexing, thumbnails, embeddings, metadata, and retrieval should remain on the user's machine.
 
-Original photos should be treated as read-only and should never be modified, moved, or deleted by the indexing pipeline.
+Original photos are treated as read-only.
+
+Recall's generated state is stored separately:
+
+```text
+.recall/
+├── recall.db
+└── thumbnails/
+```
+
+The indexing and processing pipeline should never modify, move, or delete original photos.
 
 ## Why "Recall"?
 
