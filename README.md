@@ -2,452 +2,413 @@
 
 > Find the moments you forgot you captured.
 
-Recall is a privacy-focused photo retrieval engine for rediscovering meaningful photos buried in your personal photo library.
+Recall is a local-first photo retrieval engine for rediscovering
+meaningful photos buried in a personal photo library.
 
-Modern photo collections can contain thousands of images spread across drives and folders. Recall makes those collections searchable using computer vision and natural language, helping you find photos based on **who is in them, what is happening, and what you're looking for**.
+Instead of generating new images, Recall makes the real photos you
+already have searchable using computer vision, face embeddings, and
+natural language. It can search for both **what is in a photo** and
+**whether you are in it**.
 
-Instead of generating new images, Recall helps you rediscover the real ones you already have.
+``` text
+person holding a camera
+group of friends
+city skyline
+photos of me outside
+photos of me wearing a suit
+```
 
-## Motivation
+## Why Recall?
 
 Some of our best photos are also the ones we've forgotten about.
 
-A great portrait might be sitting in a folder from three years ago. A photo with an old friend might be buried among thousands of screenshots and duplicates. Manually searching through an entire photo library doesn't scale particularly well.
+A great portrait might be sitting in a folder from three years ago. A
+photo with an old friend might be buried among thousands of screenshots
+and duplicates. Manually searching an entire photo library does not
+scale well.
 
 Recall started from a simple question:
 
-> **What if I could search my entire photo library for the moments worth remembering?**
+> **What if I could search my entire photo library for the moments worth
+> remembering?**
 
-Recall now supports semantic searches such as:
-
-```text
-person holding a camera
-group of friends
-food at a restaurant
-city skyline
-person wearing a suit
-```
-
-The long-term goal is to support more personal and context-aware queries such as:
-
-```text
-photos of me filmmaking
-photos where I'm genuinely smiling
-me with friends in college
-good photos of me for a profile picture
-```
-
-Recall retrieves and ranks relevant images from the user's existing photo library while keeping its generated data local.
+The goal is not just to search photos. It is to **remember what was
+there**.
 
 ## Current Status
 
-Recall is currently under active development.
+Recall is under active development. The current milestone, **v0.5**,
+supports identity-aware semantic retrieval.
 
-### v0.1 — Image Discovery
+### v0.1 --- Image Discovery
 
-Recall began as a command-line tool for recursively scanning a directory and discovering supported image files.
+-   Recursive directory scanning
+-   `.jpg`, `.jpeg`, `.png`, `.heic`, `.heif`, and `.webp` support
+-   File-extension statistics
 
-Supported formats include:
+### v0.2 --- Persistent Image Index
 
-- `.jpg`
-- `.jpeg`
-- `.png`
-- `.heic`
-- `.heif`
-- `.webp`
+-   Local SQLite index
+-   New, modified, unchanged, and deleted image detection
+-   Incremental indexing
+-   Scan-root-aware deletion cleanup
 
-The scanner also reports the number of discovered images by file type.
+### v0.3 --- Image Processing
 
-### v0.2 — Persistent Image Index
+-   Pillow-based image decoding
+-   HEIC/HEIF decoding
+-   Image metadata extraction
+-   Thumbnail generation
+-   Incremental processing
+-   Processing failure tracking
+-   Cleanup of generated thumbnail artifacts
 
-Recall maintains a persistent local SQLite index of discovered images.
+### v0.4 --- Semantic Retrieval
 
-The index tracks filesystem metadata and synchronizes with the photo library across scans.
+-   CLIP-style image and text embeddings
+-   Normalized embedding vectors
+-   Persistent local embedding cache
+-   Incremental embedding generation
+-   Invalidation when source images change
+-   Cleanup when source images are deleted
+-   Cosine-similarity ranking
+-   Natural-language photo search
 
-Recall distinguishes between:
+At the current library scale, Recall intentionally uses brute-force
+similarity search rather than an approximate nearest-neighbor index.
+This provides a simple, measurable baseline before adding more complex
+vector indexing.
 
-- New images
-- Modified images
-- Unchanged images
-- Deleted images
+### v0.5 --- Identity-Aware Retrieval
 
-Only new or modified files need to be re-indexed, allowing later image-processing and machine-learning stages to avoid unnecessary work.
+-   Face detection
+-   Face embeddings
+-   Persistent face embedding cache
+-   Identity embedding built from reference photos
+-   Identity-only photo retrieval
+-   Identity-aware semantic retrieval
+-   Face artifact invalidation and deletion cleanup
+-   Precision@K evaluation
+-   Persisted relevance judgments
 
-Deleted files are removed from Recall's index and generated cache without modifying the user's original photo library.
+Identity-aware retrieval separates two signals:
 
-### v0.3 — Image Processing Pipeline
+``` text
+"me"                         "holding a camera"
+  │                                  │
+  ▼                                  ▼
+Identity similarity            Semantic similarity
+  │                                  │
+  └──────────────┬───────────────────┘
+                 ▼
+       Filter by identity,
+       rank by semantics
+```
 
-Recall can open indexed images and build a local processing cache.
+This allows Recall to move from:
 
-The processing pipeline supports:
+``` text
+person holding a camera
+```
 
-- Image decoding with Pillow
-- HEIC/HEIF decoding
-- Width and height extraction
-- Image format detection
-- Incremental image processing
-- Thumbnail generation
-- Persistent thumbnail paths
-- Processing failure tracking
-- Thumbnail cleanup for deleted images
+toward:
 
-Original photos are treated as read-only.
+``` text
+photos of me holding a camera
+```
 
-### v0.4 — Semantic Retrieval
+## How It Works
 
-Recall can generate multimodal embeddings for indexed photos and search the library using natural-language queries.
+Recall is an incremental multimodal retrieval pipeline:
 
-The semantic retrieval pipeline supports:
+``` text
+Photo Library
+     │
+     ▼
+Image Discovery
+     │
+     ▼
+SQLite Index
+     │
+     ├───────────────┐
+     ▼               ▼
+Thumbnails       Face Detection
+     │               │
+     ▼               ▼
+CLIP Image       Face Embeddings
+Embeddings           │
+     │               ▼
+     │          Identity Matching
+     │               │
+     └───────┬───────┘
+             ▼
+     Semantic Ranking
+             │
+             ▼
+       Ranked Results
+```
 
-- CLIP-style image embeddings
-- CLIP-style text embeddings
-- Normalized embedding vectors
-- Persistent image embedding cache
-- Incremental embedding generation
-- Embedding invalidation for modified images
-- Embedding cleanup for deleted images
-- Cosine-similarity search
-- Ranked natural-language search results
+The stages are deliberately separated:
 
-Image embeddings are generated once and persisted locally. Subsequent searches embed only the text query and compare it against the cached image vectors.
+``` text
+Discovery   → What files exist?
+Indexing    → What changed?
+Processing  → Can the image be decoded?
+Embedding   → What does the image represent?
+Identity    → Is the target person in the image?
+Retrieval   → Which matching images best fit the query?
+Evaluation  → How relevant are the ranked results?
+```
 
-For the current scale of the project, Recall uses brute-force similarity search rather than an approximate nearest-neighbor index. This keeps the retrieval implementation simple while providing a baseline that can be benchmarked before introducing more complex vector indexing.
+Expensive work is cached and only rerun when necessary.
 
-Runtime data is stored separately from the photo library:
+## Runtime Data
 
-```text
+Recall stores generated state separately from the original photo
+library:
+
+``` text
 .recall/
 ├── recall.db
 ├── thumbnails/
-│   ├── 1.jpg
-│   ├── 2.jpg
-│   └── ...
-└── embeddings/
-    ├── 1.npy
-    ├── 2.npy
-    └── ...
+│   └── <image_id>.jpg
+├── embeddings/
+│   └── <image_id>.npy
+├── faces/
+│   └── <face_id>.npy
+└── identities/
+    └── me.npy
 ```
 
-## Usage
+Original photos are treated as read-only.
+
+When a source photo changes, Recall invalidates and regenerates the
+affected derived data. When a source photo is deleted, Recall removes
+its database state and generated thumbnail, semantic embedding, and face
+embeddings.
+
+## Installation
 
 ### Requirements
 
-- Python 3.10+
+-   Python 3.10+
+-   Dependencies listed in `requirements.txt`
 
 Clone the repository:
 
-```bash
+``` bash
 git clone https://github.com/matthew-ho-1/Recall.git
 cd Recall
 ```
 
 Install dependencies:
 
-```bash
+``` bash
 pip install -r requirements.txt
 ```
 
+## Usage
+
 ### Index a Photo Library
 
-Run Recall against a photo directory:
-
-```bash
+``` bash
 python scanner.py /path/to/photos
 ```
 
 On Windows:
 
-```bash
+``` bash
 python scanner.py "E:\Photos"
 ```
 
-or using the Python launcher:
+Recall recursively scans the directory, updates its index, processes
+changed images, generates semantic embeddings, and detects faces.
+Subsequent scans skip unchanged work.
 
-```bash
-py scanner.py "E:\Photos"
-```
+### Semantic Search
 
-Recall recursively scans all subdirectories under the provided path.
+Search the indexed library with natural language:
 
-A scan may produce output similar to:
-
-```text
-Scanning E:\Photos...
-
-Found 1847 images:
-
-.heic     724
-.jpeg      83
-.jpg      912
-.png      103
-.webp      25
-
-Indexing images...
-
-Discovered: 1847
-New:          12
-Modified:      2
-Unchanged:  1833
-Deleted:       0
-
-Processing images...
-
-Processed:    14
-Skipped:    1833
-Failed:        0
-
-Generating embeddings...
-
-Embedded:     14
-Skipped:    1833
-Failed:        0
-```
-
-Subsequent scans avoid unnecessarily processing or embedding unchanged images.
-
-### Search Your Photo Library
-
-Once the library has been indexed, search it using natural language:
-
-```bash
+``` bash
 python search.py "person holding a camera"
 ```
 
 Specify the number of results:
 
-```bash
+``` bash
 python search.py "group of friends" --limit 10
 ```
 
-Example output:
+Similarity scores represent relative closeness in the multimodal
+embedding space, not probabilities or confidence percentages.
 
-```text
-Results for "person holding a camera":
+### Identity Search
 
-1. 0.312  E:\Photos\film-shoot.jpg
-2. 0.287  E:\Photos\camera.jpg
-3. 0.265  E:\Photos\friends.jpg
-4. 0.251  E:\Photos\trip.jpg
-5. 0.243  E:\Photos\portrait.jpg
+Search for photos matching the persisted identity:
+
+``` bash
+python identity_search.py --limit 20
 ```
 
-Similarity scores represent relative closeness in the multimodal embedding space rather than probabilities or confidence percentages.
+### Identity-Aware Semantic Search
 
-## Architecture
+Filter to photos matching the identity, then rank those candidates by a
+semantic query:
 
-Recall is built as an incremental multimodal retrieval pipeline:
-
-```text
-Photo Library
-      │
-      ▼
-┌──────────────────┐
-│ Image Discovery  │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Persistent       │
-│ SQLite Index     │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Image Processing │
-│ + Thumbnails     │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Image Embeddings │
-│      (CLIP)      │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Persistent       │
-│ Embedding Cache  │
-└────────┬─────────┘
-         │
-         │              Natural-Language Query
-         │                       │
-         │                       ▼
-         │              ┌──────────────────┐
-         │              │ Text Embedding   │
-         │              │     (CLIP)       │
-         │              └────────┬─────────┘
-         │                       │
-         └───────────┬───────────┘
-                     ▼
-            ┌──────────────────┐
-            │ Cosine           │
-            │ Similarity       │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │ Ranked Results   │
-            └──────────────────┘
+``` bash
+python combined_search.py "with people" --limit 10
+python combined_search.py "outside" --limit 10
+python combined_search.py "wearing a suit" --limit 10
 ```
 
-The current architecture deliberately separates:
+### Evaluate Retrieval
 
-```text
-Discovery      → What files exist?
-Indexing       → What changed?
-Processing     → Can the image be decoded?
-Embedding      → What does the image represent?
-Retrieval      → Which images match the query?
+Recall includes evaluation tooling for measuring retrieval behavior and
+Precision@K:
+
+``` bash
+python evaluate.py
+python evaluate_relevance.py
 ```
 
-This allows expensive stages such as image processing and embedding generation to run incrementally.
+Relevance judgments are persisted in SQLite so previously labeled
+query/image pairs can be reused across evaluation runs.
+
+## Technology
 
 Current technologies include:
 
-- Python
-- SQLite
-- Pillow
-- pillow-heif
-- PyTorch
-- OpenCLIP
-- NumPy
-- CLIP-style multimodal embeddings
+-   Python
+-   SQLite
+-   Pillow
+-   pillow-heif
+-   PyTorch
+-   OpenCLIP
+-   NumPy
+-   InsightFace
+-   ONNX Runtime
+-   OpenCV
 
-Potential future technologies include:
+## Design Decisions
 
-- Face detection and face embeddings
-- Perceptual hashing
-- Approximate nearest-neighbor search
-- FastAPI
-- Web-based result visualization
+### Local-first
+
+Personal photo libraries contain sensitive data. Recall is designed so
+its index, thumbnails, embeddings, identity data, and retrieval state
+remain local wherever practical.
+
+### Incremental processing
+
+Image decoding, embedding generation, and face detection are expensive
+relative to filesystem scanning. Recall tracks source-file changes and
+avoids repeating those stages for unchanged images.
+
+### Simple retrieval baseline
+
+For a library of a few thousand photos, brute-force cosine similarity is
+sufficient and easy to reason about. Approximate nearest-neighbor
+indexing can be introduced later if benchmarks show it is necessary.
+
+### Separate identity and semantic signals
+
+Recall does not treat identity as just another text-search concept. Face
+similarity determines whether the target identity appears in an image;
+CLIP similarity determines how well that image matches the
+natural-language query.
 
 ## Roadmap
 
 ### Foundation
 
-- [x] Recursive image discovery
-- [x] File-extension statistics
-- [x] Persistent SQLite image index
-- [x] Incremental indexing
-- [x] New, modified, unchanged, and deleted image detection
-- [x] Image metadata extraction
-- [x] HEIC/HEIF image support
-- [x] Thumbnail generation
-- [x] Incremental image processing
-- [x] Processing failure tracking
-- [x] Thumbnail cleanup
+-   [x] Recursive image discovery
+-   [x] Persistent SQLite image index
+-   [x] Incremental indexing
+-   [x] Image metadata extraction
+-   [x] HEIC/HEIF support
+-   [x] Thumbnail generation
+-   [x] Generated-artifact cleanup
 
-### Retrieval
+### Semantic Retrieval
 
-- [x] Multimodal image embeddings
-- [x] Text embeddings
-- [x] Natural-language photo search
-- [x] Vector similarity search
-- [x] Persistent embedding cache
-- [x] Incremental embedding generation
-- [x] Embedding invalidation and cleanup
+-   [x] Image embeddings
+-   [x] Text embeddings
+-   [x] Natural-language search
+-   [x] Persistent embedding cache
+-   [x] Incremental embedding generation
+-   [x] Embedding invalidation and cleanup
 
 ### Identity
 
-- [ ] Face detection
-- [ ] Face embeddings
-- [ ] Identity matching
-- [ ] Identity-aware semantic queries
+-   [x] Face detection
+-   [x] Face embeddings
+-   [x] Identity matching
+-   [x] Identity-aware semantic retrieval
+-   [x] Face embedding invalidation and cleanup
+
+### Evaluation
+
+-   [x] Search latency measurement
+-   [x] Precision@K evaluation
+-   [x] Persisted relevance judgments
+-   [ ] Larger retrieval benchmark set
+-   [ ] Identity threshold calibration
 
 ### Ranking
 
-- [ ] Duplicate and near-duplicate detection
-- [ ] Image quality signals
-- [ ] Context-aware ranking
-- [ ] Retrieval evaluation and benchmarks
+-   [ ] Duplicate and near-duplicate detection
+-   [ ] Image quality signals
+-   [ ] Context-aware ranking
 
 ### Application
 
-- [ ] Search API
-- [ ] Web interface
-- [ ] Interactive result gallery
+-   [ ] Unified CLI
+-   [ ] Search API
+-   [ ] Web interface
+-   [ ] Interactive result gallery
 
-## Project Milestones
+## Milestones
 
-```text
-v0.1    Image discovery
+``` text
+v0.1  Image discovery
   │
   ▼
-v0.2    Persistent incremental indexing
+v0.2  Persistent incremental indexing
   │
   ▼
-v0.3    Image processing + thumbnails
+v0.3  Image processing + thumbnails
   │
   ▼
-v0.4    Semantic retrieval
+v0.4  Semantic retrieval
   │
   ▼
-v0.5    Identity-aware retrieval
+v0.5  Identity-aware retrieval
   │
   ▼
-v1.0    Full Recall experience
-```
-
-The next major milestone is **v0.5 — identity-aware retrieval**.
-
-Semantic retrieval can answer:
-
-```text
-person holding a camera
-```
-
-Identity-aware retrieval will begin addressing a different question:
-
-```text
-photos of me holding a camera
-```
-
-This requires separating two signals:
-
-```text
-"me"                  "holding a camera"
- │                           │
- ▼                           ▼
-Identity similarity     Semantic similarity
- │                           │
- └────────────┬──────────────┘
-              ▼
-        Combined ranking
+v1.0  Full Recall experience
 ```
 
 ## Privacy
 
-Personal photo libraries contain highly sensitive data.
+Recall never intentionally modifies or deletes an original photo.
 
-Recall is designed around a **local-first** philosophy. Photo indexing, thumbnails, embeddings, metadata, and retrieval are intended to remain on the user's machine wherever practical.
+Generated state lives under `.recall/` and can be rebuilt from the
+source library. Source-photo deletion is handled by removing
+Recall-owned database records and cached artifacts rather than touching
+any other files in the photo library.
 
-Original photos are treated as read-only.
+If Recall is developed into a distributed or hosted product, its privacy
+model and third-party model licensing will need to be reviewed
+explicitly.
 
-Recall's generated state is stored separately:
+## Why the Name?
 
-```text
-.recall/
-├── recall.db
-├── thumbnails/
-└── embeddings/
-```
+Photos are more than files---they are fragments of journeys we have
+already lived.
 
-When an original photo is modified, Recall invalidates and regenerates derived data as needed.
+Recall is about finding moments that were captured but no longer
+remembered: the people, places, and ordinary experiences whose
+significance may only become clear later.
 
-When an original photo is deleted, Recall removes its corresponding database entry, thumbnail, and embedding.
+The goal is not just to search photos.
 
-Recall never deletes an original photo.
-
-## Why "Recall"?
-
-Photos are more than files—they're fragments of journeys we've already lived.
-
-Recall is about finding the moments that were captured but no longer remembered: the people, places, and ordinary experiences whose significance may only become clear later.
-
-The goal isn't just to search photos.
-
-It's to **remember what was there**.
-
-## License
-
-This project is currently under development.
+It is to **remember what was there**.
