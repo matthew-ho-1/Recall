@@ -11,6 +11,7 @@ from database import (
 
 from processor import process_images
 from embeddings import generate_embeddings
+from faces import process_faces
 
 
 IMAGE_EXTENSIONS = {
@@ -119,6 +120,32 @@ def main():
         )
         print(
             f"Failed:   {embedding_stats['failed']}"
+        )
+
+        face_stats = process_faces(
+            connection,
+            images,
+        )
+        print("\nFace processing:")
+
+        print(
+            f"  Processed: "
+            f"{face_stats['processed']}"
+        )
+
+        print(
+            f"  Skipped: "
+            f"{face_stats['skipped']}"
+        )
+
+        print(
+            f"  Faces detected: "
+            f"{face_stats['faces_detected']}"
+        )
+
+        print(
+            f"  Failed: "
+            f"{face_stats['failed']}"
         )
 
     finally:

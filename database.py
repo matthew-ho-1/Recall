@@ -3,16 +3,34 @@ from pathlib import Path
 import numpy as np
 
 # Open recall.db
-def connect(database_path: Path) -> sqlite3.Connection: 
+def connect(
+    database_path: Path,
+) -> sqlite3.Connection:
+
     database_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    return sqlite3.connect(database_path)
+    connection = sqlite3.connect(
+        database_path
+    )
+
+    connection.execute(
+        "PRAGMA foreign_keys = ON"
+    )
+
+    return connection
 
 #Make sure image table exists
-def initialize_database(connection: sqlite3.Connection) -> None:
+def initialize_database(
+    connection: sqlite3.Connection,
+) -> None:
+
+    # --------------------------------------------------
+    # Images
+    # --------------------------------------------------
+
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS images (
@@ -21,7 +39,8 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             extension TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             modified_at REAL NOT NULL,
-            indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            indexed_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
 
             width INTEGER,
             height INTEGER,
@@ -31,7 +50,86 @@ def initialize_database(connection: sqlite3.Connection) -> None:
             processing_error TEXT,
 
             embedding_path TEXT,
-            embedded_at TEXT
+            embedded_at TEXT,
+
+            faces_processed_at TEXT
+        )
+        """
+    )
+
+    # --------------------------------------------------
+    # Temporary v0.5 migration
+    #
+    # Existing databases created before v0.5 will not
+    # have faces_processed_at.
+    # --------------------------------------------------
+
+    try:
+        connection.execute(
+            """
+            ALTER TABLE images
+            ADD COLUMN faces_processed_at TEXT
+            """
+        )
+
+    except sqlite3.OperationalError as error:
+        if (
+            "duplicate column name"
+            not in str(error)
+        ):
+            raise
+
+    # --------------------------------------------------
+    # Faces
+    # --------------------------------------------------
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS faces (
+            id INTEGER PRIMARY KEY,
+            image_id INTEGER NOT NULL,
+
+            x1 REAL NOT NULL,
+            y1 REAL NOT NULL,
+            x2 REAL NOT NULL,
+            y2 REAL NOT NULL,
+
+            embedding_path TEXT NOT NULL,
+
+            detected_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (image_id)
+                REFERENCES images(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+    # --------------------------------------------------
+    # Evaluation relevance judgments
+    # --------------------------------------------------
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS relevance_judgments (
+            query TEXT NOT NULL,
+            image_id INTEGER NOT NULL,
+
+            relevant INTEGER NOT NULL
+                CHECK (relevant IN (0, 1)),
+
+            judged_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (
+                query,
+                image_id
+            ),
+
+            FOREIGN KEY (image_id)
+                REFERENCES images(id)
+                ON DELETE CASCADE
         )
         """
     )
@@ -101,6 +199,8 @@ def index_image(connection, path):
             embedding_path = NULL,
             embedded_at = NULL,
 
+            faces_processed_at = NULL,
+
             indexed_at = CURRENT_TIMESTAMP
         """,
         (
@@ -142,20 +242,21 @@ def index_images(
 
 def remove_deleted_images(
     connection: sqlite3.Connection,
-    images: list[Path],
-    root: Path,
+    current_paths: set[Path],
+    scan_root: Path,
 ) -> int:
 
-    root = root.resolve()
+    scan_root = scan_root.resolve()
 
-    current_paths = {
-        str(image.resolve())
-        for image in images
+    current_resolved_paths = {
+        path.resolve()
+        for path in current_paths
     }
 
     cursor = connection.execute(
         """
         SELECT
+            id,
             path,
             thumbnail_path,
             embedding_path
@@ -163,52 +264,111 @@ def remove_deleted_images(
         """
     )
 
-    deleted_images = []
+    rows = cursor.fetchall()
 
-    for row in cursor.fetchall():
-        indexed_path = Path(row[0])
-        thumbnail_path = row[1]
-        embedding_path = row[2]
-
-        if indexed_path.is_relative_to(root):
-            if str(indexed_path) not in current_paths:
-                deleted_images.append(
-                    (
-                        str(indexed_path),
-                        thumbnail_path,
-                        embedding_path,
-                    )
-                )
+    deleted_count = 0
 
     for (
-        path,
+        image_id,
+        indexed_path,
         thumbnail_path,
         embedding_path,
-    ) in deleted_images:
+    ) in rows:
 
-        if thumbnail_path is not None:
-            thumbnail = Path(thumbnail_path)
+        indexed_file = Path(
+            indexed_path
+        ).resolve()
 
-            if thumbnail.exists():
-                thumbnail.unlink()
+        # ----------------------------------------------
+        # Only consider images belonging to the folder
+        # currently being scanned.
+        # ----------------------------------------------
 
-        if embedding_path is not None:
-            embedding = Path(embedding_path)
+        try:
+            indexed_file.relative_to(
+                scan_root
+            )
 
-            if embedding.exists():
-                embedding.unlink()
+        except ValueError:
+            continue
+
+        # ----------------------------------------------
+        # If it was discovered during this scan,
+        # it still exists.
+        # ----------------------------------------------
+
+        if (
+            indexed_file
+            in current_resolved_paths
+        ):
+            continue
+
+        # ----------------------------------------------
+        # Safety check:
+        #
+        # Don't delete DB state merely because the file
+        # wasn't discovered for some unexpected reason.
+        # Confirm that the original really is gone.
+        # ----------------------------------------------
+
+        if indexed_file.exists():
+            continue
+
+        # ----------------------------------------------
+        # Delete Recall thumbnail
+        # ----------------------------------------------
+
+        if thumbnail_path:
+            thumbnail_file = Path(
+                thumbnail_path
+            )
+
+            if thumbnail_file.exists():
+                thumbnail_file.unlink()
+
+        # ----------------------------------------------
+        # Delete Recall CLIP embedding
+        # ----------------------------------------------
+
+        if embedding_path:
+            embedding_file = Path(
+                embedding_path
+            )
+
+            if embedding_file.exists():
+                embedding_file.unlink()
+
+        # ----------------------------------------------
+        # Delete face embedding files + face DB rows
+        #
+        # This MUST happen before deleting the image row.
+        # ----------------------------------------------
+
+        delete_faces_for_image(
+            connection,
+            image_id,
+        )
+
+        # ----------------------------------------------
+        # Delete image DB row
+        #
+        # relevance_judgments rows will be removed by
+        # ON DELETE CASCADE when foreign keys are enabled.
+        # ----------------------------------------------
 
         connection.execute(
             """
             DELETE FROM images
-            WHERE path = ?
+            WHERE id = ?
             """,
-            (path,),
+            (image_id,),
         )
+
+        deleted_count += 1
 
     connection.commit()
 
-    return len(deleted_images)
+    return deleted_count
 
 def update_image_metadata(
     connection: sqlite3.Connection,
@@ -365,3 +525,276 @@ def get_searchable_images(
     )
 
     return cursor.fetchall()
+
+def insert_face(
+    connection: sqlite3.Connection,
+    image_id: int,
+    bbox,
+) -> int:
+
+    x1, y1, x2, y2 = bbox
+
+    cursor = connection.execute(
+        """
+        INSERT INTO faces (
+            image_id,
+            x1,
+            y1,
+            x2,
+            y2,
+            embedding_path
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            image_id,
+            float(x1),
+            float(y1),
+            float(x2),
+            float(y2),
+            "",
+        ),
+    )
+
+    return cursor.lastrowid
+
+def update_face_embedding(
+    connection: sqlite3.Connection,
+    face_id: int,
+    embedding_path: Path,
+) -> None:
+
+    connection.execute(
+        """
+        UPDATE faces
+        SET embedding_path = ?
+        WHERE id = ?
+        """,
+        (
+            str(embedding_path),
+            face_id,
+        ),
+    )
+
+def needs_face_processing(
+    connection: sqlite3.Connection,
+    path: Path,
+) -> bool:
+
+    cursor = connection.execute(
+        """
+        SELECT faces_processed_at
+        FROM images
+        WHERE path = ?
+        """,
+        (str(path.resolve()),),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return True
+
+    faces_processed_at = row[0]
+
+    return faces_processed_at is None
+
+def mark_faces_processed(
+    connection: sqlite3.Connection,
+    path: Path,
+) -> None:
+
+    connection.execute(
+        """
+        UPDATE images
+        SET faces_processed_at = CURRENT_TIMESTAMP
+        WHERE path = ?
+        """,
+        (str(path.resolve()),),
+    )
+
+def delete_faces_for_image(
+    connection: sqlite3.Connection,
+    image_id: int,
+) -> None:
+
+    cursor = connection.execute(
+        """
+        SELECT embedding_path
+        FROM faces
+        WHERE image_id = ?
+        """,
+        (image_id,),
+    )
+
+    rows = cursor.fetchall()
+
+    for (embedding_path,) in rows:
+        if embedding_path:
+            path = Path(embedding_path)
+
+            if path.exists():
+                path.unlink()
+
+    connection.execute(
+        """
+        DELETE FROM faces
+        WHERE image_id = ?
+        """,
+        (image_id,),
+    )
+
+if __name__ == "__main__":
+    connection = connect(
+        Path(".recall/recall.db")
+    )
+
+    image_id = 26  # Replace with your actual ID
+
+    fake_embedding = Path(
+        ".recall/faces/test-face.npy"
+    ).resolve()
+
+    cursor = connection.execute(
+        """
+        INSERT INTO faces (
+            image_id,
+            x1,
+            y1,
+            x2,
+            y2,
+            embedding_path
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            image_id,
+            10.0,
+            20.0,
+            100.0,
+            120.0,
+            str(fake_embedding),
+        ),
+    )
+
+    face_id = cursor.lastrowid
+
+    connection.commit()
+
+    print(
+        "Created fake face:",
+        face_id,
+    )
+
+    print(
+        "File exists:",
+        fake_embedding.exists(),
+    )
+
+    delete_faces_for_image(
+        connection,
+        image_id,
+    )
+
+    connection.commit()
+
+    print(
+        "File exists after cleanup:",
+        fake_embedding.exists(),
+    )
+
+    cursor = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM faces
+        WHERE image_id = ?
+        """,
+        (image_id,),
+    )
+
+    print(
+        "Face rows after cleanup:",
+        cursor.fetchone()[0],
+    )
+
+    connection.close()
+
+def get_searchable_faces(
+    connection: sqlite3.Connection,
+) -> list[tuple]:
+    cursor = connection.execute(
+        """
+        SELECT
+            faces.id,
+            faces.image_id,
+            images.path,
+            faces.x1,
+            faces.y1,
+            faces.x2,
+            faces.y2,
+            faces.embedding_path
+        FROM faces
+        JOIN images
+            ON faces.image_id = images.id
+        WHERE faces.embedding_path IS NOT NULL
+          AND faces.embedding_path != ''
+        """
+    )
+
+    return cursor.fetchall()
+
+def get_relevance_judgment(
+    connection: sqlite3.Connection,
+    query: str,
+    image_id: int,
+) -> bool | None:
+
+    cursor = connection.execute(
+        """
+        SELECT relevant
+        FROM relevance_judgments
+        WHERE query = ?
+          AND image_id = ?
+        """,
+        (
+            query,
+            image_id,
+        ),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return bool(row[0])
+
+def save_relevance_judgment(
+    connection: sqlite3.Connection,
+    query: str,
+    image_id: int,
+    relevant: bool,
+) -> None:
+
+    connection.execute(
+        """
+        INSERT INTO relevance_judgments (
+            query,
+            image_id,
+            relevant
+        )
+        VALUES (?, ?, ?)
+
+        ON CONFLICT(query, image_id)
+        DO UPDATE SET
+            relevant = excluded.relevant,
+            judged_at = CURRENT_TIMESTAMP
+        """,
+        (
+            query,
+            image_id,
+            int(relevant),
+        ),
+    )
+
+    connection.commit()

@@ -5,6 +5,13 @@ import numpy as np
 from insightface.app import FaceAnalysis
 from PIL import Image
 from pillow_heif import register_heif_opener
+from database import (
+    delete_faces_for_image,
+    insert_face,
+    mark_faces_processed,
+    needs_face_processing,
+    update_face_embedding,
+)
 
 
 register_heif_opener()
@@ -82,30 +89,144 @@ def get_first_face_embedding(
         faces[0]
     )
 
-if __name__ == "__main__":
+def save_face_embedding(
+    embedding: np.ndarray,
+    path: Path,
+) -> None:
+
+    path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    np.save(
+        path,
+        embedding,
+    )
+    
+def load_face_embedding(
+    path: Path,
+) -> np.ndarray:
+    return np.load(
+        path
+    )
+
+
+def process_image_faces(
+    connection,
+    app: FaceAnalysis,
+    image_path: Path,
+) -> int:
+
+    if not needs_face_processing(
+        connection,
+        image_path,
+    ):
+        return 0
+
+    cursor = connection.execute(
+        """
+        SELECT id
+        FROM images
+        WHERE path = ?
+        """,
+        (str(image_path.resolve()),),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        raise ValueError(
+            f"Image is not indexed: {image_path}"
+        )
+
+    image_id = row[0]
+
+    # Remove stale face data before regenerating it.
+    delete_faces_for_image(
+        connection,
+        image_id,
+    )
+
+    faces = detect_faces(
+        app,
+        image_path,
+    )
+
+    for face in faces:
+        embedding = get_face_embedding(
+            face
+        )
+
+        face_id = insert_face(
+            connection,
+            image_id,
+            face.bbox,
+        )
+
+        embedding_path = Path(
+            ".recall/faces"
+        ) / f"{face_id}.npy"
+
+        save_face_embedding(
+            embedding,
+            embedding_path,
+        )
+
+        update_face_embedding(
+            connection,
+            face_id,
+            embedding_path,
+        )
+
+    mark_faces_processed(
+        connection,
+        image_path,
+    )
+
+    connection.commit()
+
+    return len(faces)
+
+def process_faces(
+    connection,
+    images: list[Path],
+) -> dict:
+    stats = {
+        "processed": 0,
+        "skipped": 0,
+        "faces_detected": 0,
+        "failed": 0,
+    }
+
     app = load_face_model()
 
-    a = get_first_face_embedding(
-        app,
-        Path("IMG_5861.jpg"),
-    )
+    for image_path in images:
+        try:
+            if not needs_face_processing(
+                connection,
+                image_path,
+            ):
+                stats["skipped"] += 1
+                continue
 
-    b = get_first_face_embedding(
-        app,
-        Path("IMG_4695.HEIC"),
-    )
+            face_count = process_image_faces(
+                connection,
+                app,
+                image_path,
+            )
 
-    c = get_first_face_embedding(
-        app,
-        Path("105_4462.jpg"),
-    )
+            stats["processed"] += 1
+            stats["faces_detected"] += face_count
 
-    print(
-        "Same person:",
-        cosine_similarity(a, b),
-    )
+        except Exception as error:
+            connection.rollback()
 
-    print(
-        "Different person:",
-        cosine_similarity(a, c),
-    )
+            stats["failed"] += 1
+
+            print(
+                f"Failed to process faces for "
+                f"{image_path}: {error}"
+            )
+
+    return stats
