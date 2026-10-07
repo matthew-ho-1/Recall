@@ -102,3 +102,115 @@ def calculate_face_sharpness(
     return float(
         laplacian.var()
     )
+
+def calculate_exposure(
+    image_path: Path,
+) -> dict[str, float]:
+    """
+    Measure basic exposure characteristics of an image.
+
+    Returns raw measurements rather than a combined
+    exposure-quality score.
+    """
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        image = np.array(image)
+
+    grayscale = cv2.cvtColor(
+        image,
+        cv2.COLOR_RGB2GRAY,
+    )
+
+    mean_brightness = float(
+        grayscale.mean()
+    )
+
+    dark_fraction = float(
+        np.mean(
+            grayscale <= 25
+        )
+    )
+
+    bright_fraction = float(
+        np.mean(
+            grayscale >= 230
+        )
+    )
+
+    return {
+        "mean_brightness": mean_brightness,
+        "dark_fraction": dark_fraction,
+        "bright_fraction": bright_fraction,
+    }
+
+def calculate_region_exposure(
+    image_path: Path,
+    bbox: tuple[float, float, float, float],
+) -> dict[str, float]:
+    """
+    Measure exposure characteristics inside a specific
+    region of the original image.
+
+    bbox uses original-image coordinates.
+    """
+    with Image.open(image_path) as image:
+        image = image.convert("RGB")
+        image = np.array(image)
+
+    height, width = image.shape[:2]
+
+    x1, y1, x2, y2 = bbox
+
+    x1 = max(
+        0,
+        min(width, int(x1)),
+    )
+    y1 = max(
+        0,
+        min(height, int(y1)),
+    )
+    x2 = max(
+        0,
+        min(width, int(x2)),
+    )
+    y2 = max(
+        0,
+        min(height, int(y2)),
+    )
+
+    if x2 <= x1 or y2 <= y1:
+        raise ValueError(
+            f"Invalid bounding box: {bbox}"
+        )
+
+    region = image[
+        y1:y2,
+        x1:x2,
+    ]
+
+    grayscale = cv2.cvtColor(
+        region,
+        cv2.COLOR_RGB2GRAY,
+    )
+
+    mean_brightness = float(
+        grayscale.mean()
+    )
+
+    dark_fraction = float(
+        np.mean(
+            grayscale <= 25
+        )
+    )
+
+    bright_fraction = float(
+        np.mean(
+            grayscale >= 230
+        )
+    )
+
+    return {
+        "mean_brightness": mean_brightness,
+        "dark_fraction": dark_fraction,
+        "bright_fraction": bright_fraction,
+    }
