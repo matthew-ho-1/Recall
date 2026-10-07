@@ -214,3 +214,83 @@ def calculate_region_exposure(
         "dark_fraction": dark_fraction,
         "bright_fraction": bright_fraction,
     }
+
+def calculate_resolution(
+    image_path: Path,
+) -> dict[str, int | float]:
+    """
+    Measure the native resolution of an image.
+
+    Returns raw measurements rather than a
+    combined resolution-quality score.
+    """
+    with Image.open(image_path) as image:
+        width, height = image.size
+
+    megapixels = (
+        width * height
+    ) / 1_000_000
+
+    return {
+        "width": width,
+        "height": height,
+        "megapixels": megapixels,
+    }
+
+def calculate_face_prominence(
+    image_path: Path,
+    bbox: tuple[float, float, float, float],
+) -> dict[str, float]:
+    """
+    Measure how prominent a face is relative
+    to the full image.
+
+    bbox uses original-image coordinates.
+    """
+    with Image.open(image_path) as image:
+        width, height = image.size
+
+    x1, y1, x2, y2 = bbox
+
+    x1 = max(
+        0.0,
+        min(float(width), x1),
+    )
+    y1 = max(
+        0.0,
+        min(float(height), y1),
+    )
+    x2 = max(
+        0.0,
+        min(float(width), x2),
+    )
+    y2 = max(
+        0.0,
+        min(float(height), y2),
+    )
+
+    face_width = max(
+        0.0,
+        x2 - x1,
+    )
+    face_height = max(
+        0.0,
+        y2 - y1,
+    )
+
+    image_area = (
+        width * height
+    )
+
+    face_area = (
+        face_width * face_height
+    )
+
+    return {
+        "face_width_fraction":
+            face_width / width,
+        "face_height_fraction":
+            face_height / height,
+        "face_area_fraction":
+            face_area / image_area,
+    }
