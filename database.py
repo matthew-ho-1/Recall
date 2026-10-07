@@ -798,3 +798,21 @@ def save_relevance_judgment(
     )
 
     connection.commit()
+
+def get_processed_images(
+    connection: sqlite3.Connection,
+) -> list[tuple]:
+    cursor = connection.execute(
+        """
+        SELECT
+            id,
+            path,
+            thumbnail_path
+        FROM images
+        WHERE processed_at IS NOT NULL
+          AND processing_error IS NULL
+          AND thumbnail_path IS NOT NULL
+        """
+    )
+
+    return cursor.fetchall()
