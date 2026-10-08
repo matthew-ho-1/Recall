@@ -30,9 +30,9 @@ The goal is not just to search photos. It is to **remember what was there**.
 
 ## Current Status
 
-Recall is under active development. The latest completed milestone is **v0.7.0 — Quality-Aware Retrieval**.
+Recall is under active development. The latest implemented and tested milestone is **v0.8 — Diversity-Aware Selection** (release pending merge, push, and `v0.8.0` tag).
 
-The current pipeline supports local photo discovery, incremental indexing, semantic search, identity-aware retrieval, technical quality analysis, and optional quality-aware reranking. **Diversity-aware selection, a unified user experience, and a polished v1.0 release are still planned.**
+The current pipeline supports local photo discovery, incremental indexing, semantic search, identity-aware retrieval, technical quality analysis, optional quality-aware reranking, and diversity-aware selection. **A unified user experience and a polished v1.0 release are still planned.**
 
 ### v0.1 — Image Discovery
 
@@ -119,6 +119,17 @@ The quality system detects **specific technical issues**, such as blur and probl
 - Semantic-only mode for comparison with quality-aware results
 
 Quality-aware reranking is **optional** and uses a heuristic semantic tolerance. It is intended to improve ordering, not to guarantee an objectively best photo.
+
+### v0.8 — Diversity-Aware Selection
+
+- Optional OpenCLIP embedding similarity filtering to defer visually similar results
+- Optional perceptual-hash (pHash) selection to defer near-duplicate photos
+- Quality-aware Maximal Marginal Relevance (MMR) selection, balancing existing result order, visual similarity, and technical quality tiers
+- Configurable similarity threshold, maximum pHash distance, candidate pool, and MMR diversity weight
+- Selection fallback to fill the requested result count when fewer distinct candidates are available
+- Automated regression tests for the three selection methods, including a controlled quality-penalty comparison
+
+Selection happens after identity-aware semantic retrieval and optional quality reranking. The three diversity modes are mutually exclusive. MMR with `--diversity-weight 0.0` preserves the upstream result order; `0.4` is a practical starting point based on initial manual comparisons, not a universally optimal setting. Neither diversity selection nor quality tiers guarantee identity correctness, aesthetic quality, or duplicate-free results.
 
 ## How It Works
 
@@ -288,6 +299,38 @@ python quality_search.py "with people" --limit 10 --pool-size 30 --rerank
 
 Quality tiers reflect rule-based evidence of technical defects. They are not a measure of attractiveness, photographic artistry, or suitability for a particular profile.
 
+### Diversity-Aware Search
+
+Use a larger candidate pool when selecting a varied final set. All three selection modes can be combined with `--rerank`, but only one selection mode may be enabled at a time.
+
+**OpenCLIP similarity filtering** defers candidates that are too similar to already selected results:
+
+```bash
+python quality_search.py "outside" --rerank --diverse --similarity-threshold 0.90 --pool-size 30 --limit 10
+```
+
+**Perceptual-hash near-duplicate selection** defers images with small pHash Hamming distances:
+
+```bash
+python quality_search.py "outside" --rerank --deduplicate --max-hash-distance 8 --pool-size 30 --limit 10
+```
+
+The default distance of `8` is intentionally conservative. A larger distance may incorrectly group different photos; a pHash distance is not a semantic similarity score.
+
+**Quality-aware MMR** uses the existing candidate ranking as relevance, penalizes visual similarity to already selected results, and applies a modest technical-quality-tier penalty:
+
+```bash
+python quality_search.py "outside" --rerank --mmr --diversity-weight 0.4 --pool-size 30 --limit 10
+```
+
+`--diversity-weight` ranges from `0.0` to `1.0`. A value of `0.0` retains the upstream ranking; higher values place more emphasis on diversity. The `0.4` example is an initial recommended setting, and `0.6` is worth comparing visually on your own library. MMR is a soft tradeoff, not a strict deduplication filter.
+
+Run the selection regression tests with:
+
+```bash
+python -m unittest test_diversity_ranker.py -v
+```
+
 ### Evaluate Retrieval
 
 Recall includes evaluation tooling for measuring retrieval behavior and Precision@K:
@@ -325,9 +368,9 @@ Image decoding, embedding generation, face detection, and quality measurement ar
 
 For a library of a few thousand photos, brute-force cosine similarity is sufficient and easy to reason about. Approximate nearest-neighbor indexing can be introduced later if benchmarks show it is necessary.
 
-### Separate identity, semantics, and quality
+### Separate identity, semantics, quality, and diversity
 
-Recall does not treat identity as just another text-search concept. Face similarity helps find photos of the target person; OpenCLIP similarity ranks matches to the natural-language query; technical quality evidence can refine the ordering of nearby semantic matches.
+Recall does not treat identity as just another text-search concept. Face similarity helps find photos of the target person; OpenCLIP similarity ranks matches to the natural-language query; technical quality evidence can refine the ordering of nearby semantic matches; optional diversity selection can then reduce repetitive results.
 
 ### Interpretable quality signals
 
@@ -335,7 +378,7 @@ Quality scoring uses explicit measurements and heuristic thresholds. A tier of `
 
 ## Roadmap
 
-### Completed — v0.1 to v0.7
+### Implemented and tested — v0.1 to v0.8
 
 - [x] Recursive image discovery and supported-format scanning
 - [x] Persistent SQLite image index and incremental updates
@@ -347,15 +390,11 @@ Quality scoring uses explicit measurements and heuristic thresholds. A tier of `
 - [x] Rule-based quality tiers and defect evidence
 - [x] Quality-aware reranking with a configurable candidate pool
 - [x] SQLite quality measurement cache and invalidation
+- [x] OpenCLIP-based diversity filtering
+- [x] pHash-based near-duplicate deferral
+- [x] Quality-aware MMR selection and regression tests
 
-### Next — v0.8: Diversity-Aware Selection
-
-- [ ] Compare candidate photos using existing image embeddings
-- [ ] Reduce near-duplicate and repetitive results
-- [ ] Select varied photos without losing too much relevance or quality
-- [ ] Evaluate diversity against the existing ranking baseline
-
-### Planned — v0.9: User Experience and Prompts
+### Next — v0.9: User Experience and Prompts
 
 - [ ] More unified search workflow
 - [ ] Natural-language prompt assistance
@@ -380,7 +419,7 @@ v0.4  Semantic retrieval                     ✓
 v0.5  Identity-aware retrieval              ✓
 v0.6  Technical photo quality               ✓
 v0.7  Quality-aware retrieval + caching     ✓
-v0.8  Diversity-aware photo selection       Planned
+v0.8  Diversity-aware photo selection       Tested; release pending
 v0.9  User experience + prompts             Planned
 v1.0  Polished local release                Planned
 ```
