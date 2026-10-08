@@ -134,7 +134,166 @@ def initialize_database(
         """
     )
 
+    # --------------------------------------------------
+    # v0.7: Cached technical quality measurements
+    # --------------------------------------------------
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_measurements (
+            image_id INTEGER NOT NULL,
+            face_id INTEGER NOT NULL,
+
+            face_sharpness REAL,
+            whole_mean_brightness REAL NOT NULL,
+            face_mean_brightness REAL,
+            megapixels REAL NOT NULL,
+            face_prominence REAL,
+
+            measured_file_size INTEGER NOT NULL,
+            measured_modified_at REAL NOT NULL,
+            metrics_version INTEGER NOT NULL DEFAULT 1,
+
+            calculated_at TEXT NOT NULL
+                DEFAULT CURRENT_TIMESTAMP,
+
+            PRIMARY KEY (image_id, face_id),
+
+            FOREIGN KEY (image_id)
+                REFERENCES images(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (face_id)
+                REFERENCES faces(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+
+
+    # --------------------------------------------------
+    # v0.7: Invalidate quality cache when face geometry changes
+    # --------------------------------------------------
+
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS
+            invalidate_quality_on_face_update
+        AFTER UPDATE OF x1, y1, x2, y2 ON faces
+        BEGIN
+            DELETE FROM quality_measurements
+            WHERE face_id = NEW.id;
+        END
+        """
+    )
+
+
+
     connection.commit()
+
+
+# --------------------------------------------------
+# v0.7: Quality measurement cache
+# --------------------------------------------------
+
+QUALITY_METRICS_VERSION = 1
+
+
+def get_cached_quality_measurements(
+    connection: sqlite3.Connection,
+    image_id: int,
+    face_id: int,
+    file_size: int,
+    modified_at: float,
+) -> dict | None:
+    cursor = connection.execute(
+        """
+        SELECT
+            face_sharpness,
+            whole_mean_brightness,
+            face_mean_brightness,
+            megapixels,
+            face_prominence
+        FROM quality_measurements
+        WHERE image_id = ?
+          AND face_id = ?
+          AND measured_file_size = ?
+          AND measured_modified_at = ?
+          AND metrics_version = ?
+        """,
+        (
+            image_id,
+            face_id,
+            file_size,
+            modified_at,
+            QUALITY_METRICS_VERSION,
+        ),
+    )
+
+    row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "face_sharpness": row[0],
+        "whole_mean_brightness": row[1],
+        "face_mean_brightness": row[2],
+        "megapixels": row[3],
+        "face_prominence": row[4],
+    }
+
+
+def save_quality_measurements(
+    connection: sqlite3.Connection,
+    image_id: int,
+    face_id: int,
+    file_size: int,
+    modified_at: float,
+    measurements: dict,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO quality_measurements (
+            image_id,
+            face_id,
+            face_sharpness,
+            whole_mean_brightness,
+            face_mean_brightness,
+            megapixels,
+            face_prominence,
+            measured_file_size,
+            measured_modified_at,
+            metrics_version
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+        ON CONFLICT(image_id, face_id)
+        DO UPDATE SET
+            face_sharpness = excluded.face_sharpness,
+            whole_mean_brightness = excluded.whole_mean_brightness,
+            face_mean_brightness = excluded.face_mean_brightness,
+            megapixels = excluded.megapixels,
+            face_prominence = excluded.face_prominence,
+            measured_file_size = excluded.measured_file_size,
+            measured_modified_at = excluded.measured_modified_at,
+            metrics_version = excluded.metrics_version,
+            calculated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            image_id,
+            face_id,
+            measurements["face_sharpness"],
+            measurements["whole_mean_brightness"],
+            measurements["face_mean_brightness"],
+            measurements["megapixels"],
+            measurements["face_prominence"],
+            file_size,
+            modified_at,
+            QUALITY_METRICS_VERSION,
+        ),
+    )
+
 
 #Have I seen D:\Photos\foo.jpg before?
 def get_image(
@@ -210,6 +369,22 @@ def index_image(connection, path):
             stat.st_mtime,
         ),
     )
+
+
+    # A newly indexed or modified photo must not retain
+    # technical quality measurements from an older version.
+    connection.execute(
+        """
+        DELETE FROM quality_measurements
+        WHERE image_id = (
+            SELECT id
+            FROM images
+            WHERE path = ?
+        )
+        """,
+        (str(path.resolve()),),
+    )
+
 
 #Run that process across all discovered photos
 def index_images(
@@ -736,8 +911,9 @@ def get_searchable_faces(
         FROM faces
         JOIN images
             ON faces.image_id = images.id
-        WHERE faces.embedding_path IS NOT NULL
-          AND faces.embedding_path != ''
+       WHERE faces.embedding_path IS NOT NULL
+            AND faces.embedding_path != ''
+            AND images.faces_processed_at IS NOT NULL
         """
     )
 

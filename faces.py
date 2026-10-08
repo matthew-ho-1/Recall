@@ -1,3 +1,4 @@
+
 from pathlib import Path
 
 import cv2
@@ -5,6 +6,7 @@ import numpy as np
 from insightface.app import FaceAnalysis
 from PIL import Image
 from pillow_heif import register_heif_opener
+
 from database import (
     delete_faces_for_image,
     insert_face,
@@ -15,6 +17,7 @@ from database import (
 
 
 register_heif_opener()
+
 
 def load_face_model() -> FaceAnalysis:
     app = FaceAnalysis(
@@ -28,6 +31,7 @@ def load_face_model() -> FaceAnalysis:
     )
 
     return app
+
 
 def detect_faces(
     app: FaceAnalysis,
@@ -45,15 +49,13 @@ def detect_faces(
 
     return app.get(image)
 
+
 def get_face_embedding(
     face,
 ) -> np.ndarray:
-
     embedding = face.embedding
 
-    norm = np.linalg.norm(
-        embedding
-    )
+    norm = np.linalg.norm(embedding)
 
     if norm == 0:
         raise ValueError(
@@ -61,6 +63,7 @@ def get_face_embedding(
         )
 
     return embedding / norm
+
 
 def cosine_similarity(
     a: np.ndarray,
@@ -70,11 +73,11 @@ def cosine_similarity(
         np.dot(a, b)
     )
 
+
 def get_first_face_embedding(
     app: FaceAnalysis,
     path: Path,
 ) -> np.ndarray:
-
     faces = detect_faces(
         app,
         path,
@@ -89,11 +92,11 @@ def get_first_face_embedding(
         faces[0]
     )
 
+
 def save_face_embedding(
     embedding: np.ndarray,
     path: Path,
 ) -> None:
-
     path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -103,7 +106,8 @@ def save_face_embedding(
         path,
         embedding,
     )
-    
+
+
 def load_face_embedding(
     path: Path,
 ) -> np.ndarray:
@@ -117,7 +121,6 @@ def process_image_faces(
     app: FaceAnalysis,
     image_path: Path,
 ) -> int:
-
     if not needs_face_processing(
         connection,
         image_path,
@@ -142,26 +145,50 @@ def process_image_faces(
 
     image_id = row[0]
 
-    # Remove stale face data before regenerating it.
-    delete_faces_for_image(
-        connection,
-        image_id,
-    )
+    # --------------------------------------------------
+    # Step 1: Detect faces before deleting old data.
+    # --------------------------------------------------
 
     faces = detect_faces(
         app,
         image_path,
     )
 
-    for face in faces:
-        embedding = get_face_embedding(
-            face
-        )
+    # --------------------------------------------------
+    # Step 2: Extract all embeddings before deleting
+    # existing face records.
+    #
+    # If detection or embedding extraction fails,
+    # the old face data remains untouched.
+    # --------------------------------------------------
 
+    face_data = [
+        (
+            face.bbox,
+            get_face_embedding(face),
+        )
+        for face in faces
+    ]
+
+    # --------------------------------------------------
+    # Step 3: Remove stale face data only after
+    # detection and extraction succeed.
+    # --------------------------------------------------
+
+    delete_faces_for_image(
+        connection,
+        image_id,
+    )
+
+    # --------------------------------------------------
+    # Step 4: Save new face records and embeddings.
+    # --------------------------------------------------
+
+    for bbox, embedding in face_data:
         face_id = insert_face(
             connection,
             image_id,
-            face.bbox,
+            bbox,
         )
 
         embedding_path = Path(
@@ -179,6 +206,11 @@ def process_image_faces(
             embedding_path,
         )
 
+    # --------------------------------------------------
+    # Step 5: Mark processing complete only after
+    # all new faces have been stored.
+    # --------------------------------------------------
+
     mark_faces_processed(
         connection,
         image_path,
@@ -187,6 +219,7 @@ def process_image_faces(
     connection.commit()
 
     return len(faces)
+
 
 def process_faces(
     connection,
