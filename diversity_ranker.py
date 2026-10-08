@@ -125,3 +125,135 @@ def select_without_near_duplicates(
         )
 
     return selected
+
+
+
+def select_mmr(
+    results: list[dict],
+    embeddings: dict[int, np.ndarray],
+    limit: int = 10,
+    diversity_weight: float = 0.20,
+) -> list[dict]:
+    """
+    Select photos using Maximal Marginal Relevance (MMR).
+
+    Balance the original semantic/quality ranking against
+    similarity to already-selected photos.
+
+    Apply a small penalty for detected quality defects.
+
+    diversity_weight:
+        0.0 = prioritize original ranking
+        1.0 = prioritize visual diversity
+
+    Quality penalty:
+        tier 0 = 0.00
+        tier 1 = 0.05
+        tier 2 = 0.10
+    """
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
+
+    if not 0.0 <= diversity_weight <= 1.0:
+        raise ValueError(
+            "diversity_weight must be between 0 and 1"
+        )
+
+    if limit == 0 or not results:
+        return []
+
+    # --------------------------------------------------
+    # 1. Normalize candidate embeddings
+    # --------------------------------------------------
+
+    normalized = {}
+
+    for image_id, embedding in embeddings.items():
+        vector = np.asarray(
+            embedding,
+            dtype=np.float32,
+        ).reshape(-1)
+
+        norm = np.linalg.norm(vector)
+
+        if not np.isfinite(norm) or norm == 0:
+            continue
+
+        normalized[image_id] = vector / norm
+
+    # --------------------------------------------------
+    # 2. Select photos iteratively
+    # --------------------------------------------------
+
+    selected = []
+    selected_ids = set()
+
+    count = len(results)
+
+    while len(selected) < min(limit, count):
+        best_result = None
+        best_score = float("-inf")
+
+        for index, result in enumerate(results):
+            image_id = result["image_id"]
+
+            if image_id in selected_ids:
+                continue
+
+            # Preserve the upstream ranking as the
+            # relevance signal.
+            relevance = (
+                1.0 - index / max(count - 1, 1)
+            )
+
+            # Find maximum similarity to any photo
+            # already selected.
+            similarity_penalty = 0.0
+            vector = normalized.get(image_id)
+
+            if vector is not None:
+                for previous in selected:
+                    previous_vector = normalized.get(
+                        previous["image_id"]
+                    )
+
+                    if previous_vector is None:
+                        continue
+
+                    similarity = float(
+                        np.dot(
+                            vector,
+                            previous_vector,
+                        )
+                    )
+
+                    similarity_penalty = max(
+                        similarity_penalty,
+                        max(0.0, similarity),
+                    )
+
+            # Balance relevance and diversity.
+            score = (
+                (1.0 - diversity_weight) * relevance
+                - diversity_weight * similarity_penalty
+            )
+
+            # Discourage technically weak photos from
+            # being promoted solely for diversity.
+            quality_tier = result.get("quality_tier", 0)
+
+            # Preserve the original ranking when diversity is disabled.
+            if diversity_weight > 0.0:
+                score -= 0.05 * quality_tier
+
+            if score > best_score:
+                best_score = score
+                best_result = result
+
+        if best_result is None:
+            break
+
+        selected.append(best_result)
+        selected_ids.add(best_result["image_id"])
+
+    return selected

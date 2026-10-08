@@ -29,6 +29,7 @@ from diversity_ranker import select_diverse
 from diversity_ranker import (
     select_diverse,
     select_without_near_duplicates,
+    select_mmr,
 )
 from perceptual_hash import compute_phash
 
@@ -280,16 +281,11 @@ def search_me_with_quality(
 
     return enriched_results
 
-
-
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Search Recall using identity, semantic relevance, "
-            "technical photo quality, and optional diversity "
-            "or near-duplicate selection."
+            "technical photo quality, and optional diversity selection."
         )
     )
 
@@ -317,8 +313,8 @@ def main() -> None:
         type=int,
         default=30,
         help=(
-            "Number of semantic candidates to evaluate when "
-            "quality reranking or diversity selection is enabled"
+            "Number of candidates to evaluate when quality "
+            "reranking or diversity selection is enabled"
         ),
     )
 
@@ -331,7 +327,7 @@ def main() -> None:
     parser.add_argument(
         "--diverse",
         action="store_true",
-        help="Select visually varied results using OpenCLIP embeddings",
+        help="Select varied results using OpenCLIP similarity",
     )
 
     parser.add_argument(
@@ -339,8 +335,8 @@ def main() -> None:
         type=float,
         default=0.90,
         help=(
-            "Maximum OpenCLIP similarity before deferring "
-            "a candidate (default: 0.90)"
+            "OpenCLIP similarity threshold for deferring "
+            "similar candidates (default: 0.90)"
         ),
     )
 
@@ -355,8 +351,24 @@ def main() -> None:
         type=int,
         default=8,
         help=(
-            "Maximum pHash Hamming distance considered "
-            "a near-duplicate (default: 8)"
+            "Maximum pHash distance considered a near-duplicate "
+            "(default: 8)"
+        ),
+    )
+
+    parser.add_argument(
+        "--mmr",
+        action="store_true",
+        help="Select photos using quality-aware MMR",
+    )
+
+    parser.add_argument(
+        "--diversity-weight",
+        type=float,
+        default=0.4,
+        help=(
+            "MMR diversity weight between 0 and 1 "
+            "(default: 0.4)"
         ),
     )
 
@@ -385,9 +397,20 @@ def main() -> None:
             "--max-hash-distance must be between 0 and 63"
         )
 
-    if args.diverse and args.deduplicate:
+    if not 0.0 <= args.diversity_weight <= 1.0:
         parser.error(
-            "Use either --diverse or --deduplicate, not both"
+            "--diversity-weight must be between 0 and 1"
+        )
+
+    if sum(
+        [
+            args.diverse,
+            args.deduplicate,
+            args.mmr,
+        ]
+    ) > 1:
+        parser.error(
+            "Use only one of --diverse, --deduplicate, or --mmr"
         )
 
     # --------------------------------------------------
@@ -404,7 +427,14 @@ def main() -> None:
     # 3. Determine candidate pool size
     # --------------------------------------------------
 
-    if args.rerank or args.diverse or args.deduplicate:
+    selection_enabled = (
+        args.rerank
+        or args.diverse
+        or args.deduplicate
+        or args.mmr
+    )
+
+    if selection_enabled:
         candidate_limit = max(
             args.pool_size,
             args.limit,
@@ -413,7 +443,7 @@ def main() -> None:
         candidate_limit = args.limit
 
     # --------------------------------------------------
-    # 4. Run search and load selection data
+    # 4. Search and load selection data
     # --------------------------------------------------
 
     connection = connect(DATABASE_PATH)
@@ -431,7 +461,7 @@ def main() -> None:
         embeddings = {}
         hashes = {}
 
-        if args.diverse:
+        if args.diverse or args.mmr:
             embeddings = load_candidate_embeddings(
                 connection,
                 results,
@@ -447,7 +477,15 @@ def main() -> None:
     # 5. Select final results
     # --------------------------------------------------
 
-    if args.deduplicate:
+    if args.mmr:
+        final_results = select_mmr(
+            results,
+            embeddings,
+            limit=args.limit,
+            diversity_weight=args.diversity_weight,
+        )
+
+    elif args.deduplicate:
         final_results = select_without_near_duplicates(
             results,
             hashes,
@@ -476,7 +514,9 @@ def main() -> None:
         else "Semantic-only ranking"
     )
 
-    if args.deduplicate:
+    if args.mmr:
+        mode += " + MMR selection"
+    elif args.deduplicate:
         mode += " + near-duplicate filtering"
     elif args.diverse:
         mode += " + diversity selection"
@@ -484,8 +524,14 @@ def main() -> None:
     print(f'\n{mode}: "{args.query}"')
     print("-" * 45)
 
-    if args.rerank or args.diverse or args.deduplicate:
+    if selection_enabled:
         print(f"Candidate pool: {len(results)}")
+
+    if args.mmr:
+        print(
+            f"Diversity weight: "
+            f"{args.diversity_weight:.2f}"
+        )
 
     if args.diverse:
         print(
@@ -500,7 +546,7 @@ def main() -> None:
         )
 
     # --------------------------------------------------
-    # 7. Display final results
+    # 7. Display results
     # --------------------------------------------------
 
     if not final_results:
@@ -539,6 +585,7 @@ def main() -> None:
 
         print(f"   {result['path']}")
         print(f"   Defects: {defect_text}")
+
 
 if __name__ == "__main__":
     main()
