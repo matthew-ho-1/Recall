@@ -10,6 +10,7 @@ from database import (
     connect,
     get_cached_quality_measurements,
     get_searchable_faces,
+    get_searchable_images,
     save_quality_measurements,
 )
 from quality import (
@@ -24,6 +25,13 @@ from quality_ranker import (
     quality_tier,
 )
 from quality_reranker import rerank_by_quality
+from diversity_ranker import select_diverse
+from diversity_ranker import (
+    select_diverse,
+    select_without_near_duplicates,
+)
+from perceptual_hash import compute_phash
+
 
 
 DATABASE_PATH = Path(".recall/recall.db")
@@ -85,6 +93,65 @@ def get_best_faces_by_image(
         }
         for image_id, face in best_faces.items()
     }
+
+def load_candidate_embeddings(
+    connection: sqlite3.Connection,
+    results: list[dict],
+) -> dict[int, np.ndarray]:
+    """
+    Load existing OpenCLIP embeddings only for
+    images in the search candidate pool.
+    """
+    candidate_ids = {
+        result["image_id"]
+        for result in results
+    }
+
+    embeddings = {}
+
+    for (
+        image_id,
+        image_path,
+        thumbnail_path,
+        embedding_path,
+    ) in get_searchable_images(connection):
+        if image_id not in candidate_ids:
+            continue
+
+        path = Path(embedding_path)
+
+        if not path.is_file():
+            continue
+
+        embeddings[image_id] = load_normalized_embedding(
+            path
+        )
+
+    return embeddings
+
+
+def load_candidate_hashes(
+    results: list[dict],
+) -> dict[int, int]:
+    """
+    Compute perceptual hashes for search candidates.
+
+    This version does not cache hashes yet.
+    """
+    hashes = {}
+
+    for result in results:
+        image_id = result["image_id"]
+        image_path = Path(result["path"])
+
+        try:
+            hashes[image_id] = compute_phash(image_path)
+        except (ValueError, OSError) as error:
+            print(
+                f"Warning: Could not hash {image_path}: {error}"
+            )
+
+    return hashes
 
 
 
@@ -215,11 +282,14 @@ def search_me_with_quality(
 
 
 
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Search Recall using identity, semantic "
-            "relevance, and technical photo quality."
+            "Search Recall using identity, semantic relevance, "
+            "technical photo quality, and optional diversity "
+            "or near-duplicate selection."
         )
     )
 
@@ -247,8 +317,8 @@ def main() -> None:
         type=int,
         default=30,
         help=(
-            "Number of semantic candidates to "
-            "evaluate when quality reranking is enabled"
+            "Number of semantic candidates to evaluate when "
+            "quality reranking or diversity selection is enabled"
         ),
     )
 
@@ -258,7 +328,43 @@ def main() -> None:
         help="Apply quality-aware reranking",
     )
 
+    parser.add_argument(
+        "--diverse",
+        action="store_true",
+        help="Select visually varied results using OpenCLIP embeddings",
+    )
+
+    parser.add_argument(
+        "--similarity-threshold",
+        type=float,
+        default=0.90,
+        help=(
+            "Maximum OpenCLIP similarity before deferring "
+            "a candidate (default: 0.90)"
+        ),
+    )
+
+    parser.add_argument(
+        "--deduplicate",
+        action="store_true",
+        help="Defer near-duplicate photos using perceptual hashes",
+    )
+
+    parser.add_argument(
+        "--max-hash-distance",
+        type=int,
+        default=8,
+        help=(
+            "Maximum pHash Hamming distance considered "
+            "a near-duplicate (default: 8)"
+        ),
+    )
+
     args = parser.parse_args()
+
+    # --------------------------------------------------
+    # 1. Validate arguments
+    # --------------------------------------------------
 
     if args.limit < 1:
         parser.error("--limit must be at least 1")
@@ -269,6 +375,25 @@ def main() -> None:
     if args.pool_size < 1:
         parser.error("--pool-size must be at least 1")
 
+    if not -1.0 <= args.similarity_threshold <= 1.0:
+        parser.error(
+            "--similarity-threshold must be between -1 and 1"
+        )
+
+    if not 0 <= args.max_hash_distance <= 63:
+        parser.error(
+            "--max-hash-distance must be between 0 and 63"
+        )
+
+    if args.diverse and args.deduplicate:
+        parser.error(
+            "Use either --diverse or --deduplicate, not both"
+        )
+
+    # --------------------------------------------------
+    # 2. Validate required files
+    # --------------------------------------------------
+
     if not DATABASE_PATH.exists():
         raise FileNotFoundError(DATABASE_PATH)
 
@@ -276,10 +401,10 @@ def main() -> None:
         raise FileNotFoundError(IDENTITY_PATH)
 
     # --------------------------------------------------
-    # 5. Determine how many candidates to evaluate
+    # 3. Determine candidate pool size
     # --------------------------------------------------
 
-    if args.rerank:
+    if args.rerank or args.diverse or args.deduplicate:
         candidate_limit = max(
             args.pool_size,
             args.limit,
@@ -288,7 +413,7 @@ def main() -> None:
         candidate_limit = args.limit
 
     # --------------------------------------------------
-    # 6. Run the search
+    # 4. Run search and load selection data
     # --------------------------------------------------
 
     connection = connect(DATABASE_PATH)
@@ -302,11 +427,47 @@ def main() -> None:
             candidate_limit=candidate_limit,
             rerank=args.rerank,
         )
+
+        embeddings = {}
+        hashes = {}
+
+        if args.diverse:
+            embeddings = load_candidate_embeddings(
+                connection,
+                results,
+            )
+
+        if args.deduplicate:
+            hashes = load_candidate_hashes(results)
+
     finally:
         connection.close()
 
     # --------------------------------------------------
-    # 7. Display the final top results
+    # 5. Select final results
+    # --------------------------------------------------
+
+    if args.deduplicate:
+        final_results = select_without_near_duplicates(
+            results,
+            hashes,
+            limit=args.limit,
+            max_hash_distance=args.max_hash_distance,
+        )
+
+    elif args.diverse:
+        final_results = select_diverse(
+            results,
+            embeddings,
+            limit=args.limit,
+            similarity_threshold=args.similarity_threshold,
+        )
+
+    else:
+        final_results = results[:args.limit]
+
+    # --------------------------------------------------
+    # 6. Describe the active ranking mode
     # --------------------------------------------------
 
     mode = (
@@ -315,15 +476,32 @@ def main() -> None:
         else "Semantic-only ranking"
     )
 
+    if args.deduplicate:
+        mode += " + near-duplicate filtering"
+    elif args.diverse:
+        mode += " + diversity selection"
+
     print(f'\n{mode}: "{args.query}"')
     print("-" * 45)
 
-    if args.rerank:
+    if args.rerank or args.diverse or args.deduplicate:
+        print(f"Candidate pool: {len(results)}")
+
+    if args.diverse:
         print(
-            f"Candidate pool: {len(results)}"
+            f"Similarity threshold: "
+            f"{args.similarity_threshold:.2f}"
         )
 
-    final_results = results[:args.limit]
+    if args.deduplicate:
+        print(
+            f"Maximum pHash distance: "
+            f"{args.max_hash_distance}"
+        )
+
+    # --------------------------------------------------
+    # 7. Display final results
+    # --------------------------------------------------
 
     if not final_results:
         print("No matching images found.")
@@ -361,7 +539,6 @@ def main() -> None:
 
         print(f"   {result['path']}")
         print(f"   Defects: {defect_text}")
-
 
 if __name__ == "__main__":
     main()
