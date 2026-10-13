@@ -19,8 +19,7 @@ import webbrowser
 
 from gallery import render_gallery
 
-
-
+from identity import set_identity_from_indexed_photo
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -32,14 +31,14 @@ def main() -> None:
         required=True,
     )
 
+    # --------------------------------------------------
+    # Search command
+    # --------------------------------------------------
+
     search_parser = subparsers.add_parser(
         "search",
         help="Search your local photo library",
     )
-
-    # --------------------------------------------------
-    # Search arguments
-    # --------------------------------------------------
 
     search_parser.add_argument(
         "query",
@@ -143,10 +142,59 @@ def main() -> None:
     )
 
     # --------------------------------------------------
+    # Identity command
+    # --------------------------------------------------
+
+    identity_parser = subparsers.add_parser(
+        "identity",
+        help="Manage the target person's identity",
+    )
+
+    identity_subparsers = identity_parser.add_subparsers(
+        dest="identity_command",
+        required=True,
+    )
+
+    identity_set_parser = identity_subparsers.add_parser(
+        "set",
+        help="Set identity from an indexed solo-face photo",
+    )
+
+    identity_set_parser.add_argument(
+        "--image-id",
+        type=int,
+        required=True,
+        help="Image ID of a confirmed photo of you",
+    )
+
+    # --------------------------------------------------
     # Parse arguments
     # --------------------------------------------------
 
     args = parser.parse_args()
+
+    # --------------------------------------------------
+    # Execute identity command
+    # --------------------------------------------------
+
+    if args.command == "identity":
+        if args.identity_command == "set":
+            try:
+                set_identity_from_indexed_photo(
+                    args.image_id
+                )
+            except (
+                ValueError,
+                FileNotFoundError,
+                FileExistsError,
+            ) as error:
+                identity_set_parser.error(str(error))
+
+            return
+
+    # --------------------------------------------------
+    # Execute search command
+    # --------------------------------------------------
 
     if args.command == "search":
         query = args.query
@@ -168,13 +216,15 @@ def main() -> None:
 
         if args.interpret:
             try:
-                intent = parse_search_prompt(args.query)
+                intent = parse_search_prompt(
+                    args.query
+                )
             except ValueError as error:
                 search_parser.error(str(error))
 
             query = intent.query
 
-            # Explicit --limit overrides the count in the prompt.
+            # Explicit --limit overrides the prompt count.
             limit = (
                 intent.limit
                 if args.limit is None
@@ -195,7 +245,7 @@ def main() -> None:
                 selection = intent.selection
 
         # --------------------------------------------------
-        # Execute search using the reusable API
+        # Search using reusable API
         # --------------------------------------------------
 
         try:
@@ -210,7 +260,10 @@ def main() -> None:
                 max_hash_distance=args.max_hash_distance,
                 diversity_weight=args.diversity_weight,
             )
-        except (ValueError, FileNotFoundError) as error:
+        except (
+            ValueError,
+            FileNotFoundError,
+        ) as error:
             search_parser.error(str(error))
 
         # --------------------------------------------------
@@ -225,7 +278,12 @@ def main() -> None:
                 selection=selection,
             )
 
-            print(json.dumps(payload, indent=2))
+            print(
+                json.dumps(
+                    payload,
+                    indent=2,
+                )
+            )
             return
 
         # --------------------------------------------------
@@ -245,10 +303,18 @@ def main() -> None:
                 Path(".recall/gallery.html"),
             )
 
-            gallery_url = gallery_path.resolve().as_uri()
+            gallery_url = (
+                gallery_path.resolve().as_uri()
+            )
 
-            print(f"Gallery created: {gallery_path.resolve()}")
-            webbrowser.open(gallery_url)
+            print(
+                f"Gallery created: "
+                f"{gallery_path.resolve()}"
+            )
+
+            webbrowser.open(
+                gallery_url
+            )
             return
 
         # --------------------------------------------------
@@ -268,15 +334,22 @@ def main() -> None:
         elif selection == "diverse":
             mode += " + diversity selection"
 
-        print(f'\n{mode}: "{query}"')
+        print(
+            f'\n{mode}: "{query}"'
+        )
         print("-" * 45)
 
         if not results:
             print("No matching images found.")
             return
 
-        for rank, result in enumerate(results, start=1):
-            evidence = result["quality_evidence"]
+        for rank, result in enumerate(
+            results,
+            start=1,
+        ):
+            evidence = result[
+                "quality_evidence"
+            ]
 
             defects = []
 
@@ -302,8 +375,14 @@ def main() -> None:
                 f"tier={result['quality_tier']}"
             )
 
-            print(f"   {result['path']}")
-            print(f"   Defects: {defect_text}")
+            print(
+                f"   {result['path']}"
+            )
+
+            print(
+                f"   Defects: {defect_text}"
+            )
+
 
 if __name__ == "__main__":
     main()

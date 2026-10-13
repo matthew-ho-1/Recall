@@ -2,6 +2,7 @@ from pathlib import Path
 
 from PIL import Image
 from pillow_heif import register_heif_opener
+from tqdm import tqdm
 
 from database import (
     get_image_id,
@@ -36,7 +37,12 @@ def process_images(
 
     thumbnail_directory = Path(".recall") / "thumbnails"
 
-    for image in images:
+    for image in tqdm(
+        images,
+        desc="Processing photos",
+        unit="photo",
+        dynamic_ncols=True,
+    ):
 
         if not needs_processing(connection, image):
             stats["skipped"] += 1

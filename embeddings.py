@@ -12,6 +12,8 @@ from database import (
     update_image_embedding,
 )
 
+from tqdm import tqdm
+
 
 MODEL_NAME = "ViT-B-32"
 PRETRAINED = "laion2b_s34b_b79k"
@@ -108,7 +110,12 @@ def generate_embeddings(
         Path(".recall") / "embeddings"
     )
 
-    for image in images:
+    for image in tqdm(
+        images,
+        desc="CLIP embeddings",
+        unit="photo",
+        dynamic_ncols=True,
+    ):
 
         if not needs_embedding(
             connection,

@@ -6,6 +6,7 @@ import numpy as np
 from insightface.app import FaceAnalysis
 from PIL import Image
 from pillow_heif import register_heif_opener
+from tqdm import tqdm
 
 from database import (
     delete_faces_for_image,
@@ -234,7 +235,12 @@ def process_faces(
 
     app = load_face_model()
 
-    for image_path in images:
+    for image_path in tqdm(
+        images,
+        desc="Face detection",
+        unit="photo",
+        dynamic_ncols=True,
+    ):
         try:
             if not needs_face_processing(
                 connection,
